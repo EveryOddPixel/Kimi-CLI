@@ -807,6 +807,7 @@ export class Config implements McpContext, AgentLoopContext {
   private readonly outputSettings: OutputSettings;
 
   private readonly gemmaModelRouter: GemmaModelRouterSettings;
+  private readonly disableModelRouterForAuth?: AuthType[];
 
   private readonly continueOnFailedApiCall: boolean;
   private readonly retryFetchErrors: boolean;
@@ -1138,9 +1139,11 @@ export class Config implements McpContext, AgentLoopContext {
           params.gemmaModelRouter?.classifier?.host ?? 'http://localhost:9379',
         model:
           params.gemmaModelRouter?.classifier?.model ?? 'gemma3-1b-gpu-custom',
-      },
-    };
-    this.retryFetchErrors = params.retryFetchErrors ?? true;
+        },
+        };
+        this.disableModelRouterForAuth = params.disableModelRouterForAuth;
+        this.retryFetchErrors = params.retryFetchErrors ?? true;
+
     this.maxAttempts = Math.min(
       params.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
       DEFAULT_MAX_ATTEMPTS,
@@ -2704,6 +2707,10 @@ export class Config implements McpContext, AgentLoopContext {
 
   async getPlanModeRoutingEnabled(): Promise<boolean> {
     return this.planModeRoutingEnabled;
+  }
+
+  getDisableModelRouterForAuth(): AuthType[] | undefined {
+    return this.disableModelRouterForAuth;
   }
 
   async getNumericalRoutingEnabled(): Promise<boolean> {
