@@ -218,37 +218,47 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const delta = json.choices[0]?.delta;
                 
                 if (delta) {
-                  // Reasoning is safe
+                  // 1. Handle Reasoning (Thought)
                   if (delta.reasoning_content) {
-                    yield self.mapFromOpenAiStreamResponse(json);
-                    continue;
+                    const response = new GenerateContentResponse();
+                    response.candidates = [{
+                      content: { role: 'model', parts: [{ thought: delta.reasoning_content }] }
+                    }];
+                    yield response;
                   }
 
+                  // 2. Handle Content with strict look-ahead
                   if (delta.content) {
                     textBuffer += delta.content;
 
                     if (!markerActive) {
                       const markerIdx = textBuffer.indexOf('<|');
                       if (markerIdx !== -1) {
-                        // Yield only the text BEFORE the marker
-                        const safeText = textBuffer.substring(0, markerIdx);
-                        if (safeText) {
+                        // Found start of a marker. Yield text BEFORE it.
+                        const preMarker = textBuffer.substring(0, markerIdx);
+                        if (preMarker) {
                           const response = new GenerateContentResponse();
                           response.candidates = [{
-                            content: { role: 'model', parts: [{ text: safeText }] }
+                            content: { role: 'model', parts: [{ text: preMarker }] }
                           }];
                           yield response;
                         }
                         textBuffer = textBuffer.substring(markerIdx);
                         markerActive = true;
                       } else {
-                        // No marker start, yield all current text buffer
-                        const response = new GenerateContentResponse();
-                        response.candidates = [{
-                          content: { role: 'model', parts: [{ text: textBuffer }] }
-                        }];
-                        yield response;
-                        textBuffer = '';
+                        // No marker yet. Hold the last character if it's '<'
+                        let safeLength = textBuffer.length;
+                        if (textBuffer.endsWith('<')) safeLength -= 1;
+                        
+                        if (safeLength > 0) {
+                          const safeText = textBuffer.substring(0, safeLength);
+                          const response = new GenerateContentResponse();
+                          response.candidates = [{
+                            content: { role: 'model', parts: [{ text: safeText }] }
+                          }];
+                          yield response;
+                          textBuffer = textBuffer.substring(safeLength);
+                        }
                       }
                     }
 
@@ -266,10 +276,18 @@ export class NvidiaContentGenerator implements ContentGenerator {
                         textBuffer = '';
                         markerActive = false;
                       }
-                      // Buffering marker... yield nothing
+                      // Keep buffering marker...
                     }
-                  } else if (delta.tool_calls) {
-                    yield self.mapFromOpenAiStreamResponse(json);
+                  }
+
+                  // 3. Handle standard Tool Calls
+                  if (delta.tool_calls) {
+                    const response = self.mapFromOpenAiStreamResponse(json);
+                    // Filter parts to only include function calls
+                    response.candidates![0].content.parts = response.candidates![0].content.parts.filter(p => p.functionCall);
+                    if (response.candidates![0].content.parts.length > 0) {
+                      yield response;
+                    }
                   }
                 }
               } catch (e) {
