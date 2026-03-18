@@ -227,32 +227,37 @@ export class NvidiaContentGenerator implements ContentGenerator {
                   if (delta.content) {
                     textBuffer += delta.content;
 
-                    if (textBuffer.includes('<|')) {
+                    // Detect if we've entered a marker zone
+                    if (!isBufferingMarker && textBuffer.includes('<|')) {
                       isBufferingMarker = true;
                     }
 
                     if (isBufferingMarker) {
                       if (textBuffer.includes('<|tool_calls_section_end|>')) {
                         const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-                        const response = self.mapFromOpenAiStreamResponse(json);
-                        response.candidates![0].content.parts = [
-                          ...(text ? [{ text }] : []),
-                          ...toolCalls
-                        ];
+                        
+                        // Construct a fresh response to avoid leaking the raw markers from the chunk
+                        const response = new GenerateContentResponse();
+                        response.candidates = [{
+                          content: {
+                            role: 'model',
+                            parts: [...(text ? [{ text }] : []), ...toolCalls]
+                          }
+                        }];
                         yield response;
+                        
                         textBuffer = '';
                         isBufferingMarker = false;
-                      } else {
-                        // Keep buffering, don't yield anything
-                        continue;
                       }
+                      // Marker still in progress, hold everything
+                      continue;
                     } else {
-                      // Normal text, no markers in sight
+                      // No markers, yield the content directly
                       yield self.mapFromOpenAiStreamResponse(json);
                       textBuffer = '';
                     }
                   } else if (delta.tool_calls) {
-                    // Standard API tool calls
+                    // Handle standard API tool calls
                     yield self.mapFromOpenAiStreamResponse(json);
                   }
                 }
@@ -263,14 +268,19 @@ export class NvidiaContentGenerator implements ContentGenerator {
           }
         }
         
-        // Final flush
+        // Final flush at the end of the stream
         if (textBuffer) {
           const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-          const response = new GenerateContentResponse();
-          response.candidates = [{
-            content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
-          }];
-          yield response;
+          if (text || toolCalls.length > 0) {
+            const response = new GenerateContentResponse();
+            response.candidates = [{
+              content: {
+                role: 'model',
+                parts: [...(text ? [{ text }] : []), ...toolCalls]
+              }
+            }];
+            yield response;
+          }
         }
       } finally {
         reader.releaseLock();
