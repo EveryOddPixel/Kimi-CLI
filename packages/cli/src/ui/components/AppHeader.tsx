@@ -24,10 +24,10 @@ interface AppHeaderProps {
   showDetails?: boolean;
 }
 
-const DEFAULT_ICON = `▛▀▀▀▀▜
-▙▄ ▐ ▄▟
-   ▐   
-   ▐   `;
+const DEFAULT_ICON = `████████
+   ██   
+   ██   
+   ██   `;
 
 /**
  * The default Apple Terminal.app adds significant line-height padding between
@@ -36,10 +36,10 @@ const DEFAULT_ICON = `▛▀▀▀▀▜
  * which makes the padding gaps look like an intentional "scanline" design
  * rather than a broken image.
  */
-const MAC_TERMINAL_ICON = `▛▀▀▀▀▜
-▙▄ ▐ ▄▟
-   ▐   
-   ▐   `;
+const MAC_TERMINAL_ICON = `████████
+   ██   
+   ██   
+   ██   `;
 
 export const AppHeader = ({ version, showDetails = true }: AppHeaderProps) => {
   const settings = useSettings();
