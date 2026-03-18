@@ -197,6 +197,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
     const self = this;
     async function* streamGenerator() {
       let buffer = '';
+      let textBuffer = ''; // Buffer for tool call detection
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -212,7 +213,34 @@ export class NvidiaContentGenerator implements ContentGenerator {
             if (trimmed.startsWith('data: ')) {
               try {
                 const json = JSON.parse(trimmed.slice(6));
-                yield self.mapFromOpenAiStreamResponse(json);
+                const delta = json.choices[0]?.delta;
+                
+                if (delta && delta.content) {
+                  textBuffer += delta.content;
+                  
+                  // Check if we have a complete tool call section
+                  if (textBuffer.includes('<|tool_calls_section_end|>')) {
+                    const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
+                    // Yield the translated response
+                    const response = self.mapFromOpenAiStreamResponse(json);
+                    // Override with parsed data
+                    response.candidates![0].content.parts = [
+                      ...(text ? [{ text }] : []),
+                      ...toolCalls
+                    ];
+                    yield response;
+                    textBuffer = ''; // Clear buffer
+                  } else if (textBuffer.includes('<|tool_calls_section_begin|>')) {
+                    // We are inside a tool call section, buffer it and don't yield text yet
+                    continue;
+                  } else {
+                    // Standard text, yield normally
+                    yield self.mapFromOpenAiStreamResponse(json);
+                    textBuffer = '';
+                  }
+                } else {
+                  yield self.mapFromOpenAiStreamResponse(json);
+                }
               } catch (e) {
                 // Ignore partial lines
               }
@@ -236,18 +264,53 @@ export class NvidiaContentGenerator implements ContentGenerator {
     throw new Error('Embeddings not supported for NVIDIA provider');
   }
 
+  private parseEmbeddedToolCalls(text: string): { text: string; toolCalls: any[] } {
+    const toolCalls: any[] = [];
+    let remainingText = text;
+
+    // Regex to match Kimi's tool call format:
+    // <|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:ID<|tool_call_argument_begin|>JSON_ARGS<|tool_call_end|><|tool_calls_section_end|>
+    const sectionRegex = /<\|tool_calls_section_begin\|>([\s\S]*?)<\|tool_calls_section_end\|>/g;
+    const callRegex = /<\|tool_call_begin\|>functions\.(\w+):?\d*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
+
+    let match;
+    while ((match = sectionRegex.exec(text)) !== null) {
+      const sectionContent = match[1];
+      let callMatch;
+      while ((callMatch = callRegex.exec(sectionContent)) !== null) {
+        try {
+          toolCalls.push({
+            functionCall: {
+              name: callMatch[1],
+              args: JSON.parse(callMatch[2].trim()),
+            },
+          });
+        } catch (e) {
+          debugLogger.warn(`Failed to parse Kimi tool arguments: ${callMatch[2]}`);
+        }
+      }
+      remainingText = remainingText.replace(match[0], '');
+    }
+
+    return { text: remainingText.trim(), toolCalls };
+  }
+
   private mapFromOpenAiResponse(data: any): GenerateContentResponse {
     const out = new GenerateContentResponse();
     const choice = data.choices[0];
+    
+    let content = choice.message.content || '';
+    const { text, toolCalls } = this.parseEmbeddedToolCalls(content);
     
     const parts: any[] = [];
     if (choice.message.reasoning_content) {
       parts.push({ thought: choice.message.reasoning_content });
     }
-    if (choice.message.content) {
-      parts.push({ text: choice.message.content });
+    if (text) {
+      parts.push({ text });
     }
     
+    // Add standard tool calls
     if (choice.message.tool_calls) {
       for (const tc of choice.message.tool_calls) {
         parts.push({
@@ -258,6 +321,9 @@ export class NvidiaContentGenerator implements ContentGenerator {
         });
       }
     }
+
+    // Add parsed embedded tool calls
+    parts.push(...toolCalls);
 
     if (parts.length === 0) {
       parts.push({ text: '' });
@@ -289,8 +355,13 @@ export class NvidiaContentGenerator implements ContentGenerator {
     if (delta && delta.reasoning_content) {
       parts.push({ thought: delta.reasoning_content });
     }
+    
     if (delta && delta.content) {
-      parts.push({ text: delta.content });
+      const { text, toolCalls } = this.parseEmbeddedToolCalls(delta.content);
+      if (text) {
+        parts.push({ text });
+      }
+      parts.push(...toolCalls);
     }
     
     if (delta && delta.tool_calls) {
