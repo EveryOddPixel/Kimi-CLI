@@ -76,6 +76,21 @@ export class ModelRouterService {
     const startTime = Date.now();
     let decision: RoutingDecision;
 
+    const authType = this.config.getContentGeneratorConfig?.()?.authType;
+    if (
+      authType &&
+      this.config.getDisableModelRouterForAuth()?.includes(authType)
+    ) {
+      return {
+        model: this.config.getModel(),
+        metadata: {
+          source: 'bypass',
+          latencyMs: 0,
+          reasoning: `Routing bypassed for auth type: ${authType}`,
+        },
+      };
+    }
+
     const [enableNumericalRouting, thresholdValue] = await Promise.all([
       this.config.getNumericalRoutingEnabled(),
       this.config.getResolvedClassifierThreshold(),
