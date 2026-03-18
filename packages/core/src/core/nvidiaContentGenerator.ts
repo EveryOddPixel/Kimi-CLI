@@ -218,7 +218,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const delta = json.choices[0]?.delta;
                 
                 if (delta) {
-                  // 1. Handle Reasoning (Thought)
+                  // 1. Reasoning is always safe to yield
                   if (delta.reasoning_content) {
                     const response = new GenerateContentResponse();
                     response.candidates = [{
@@ -227,63 +227,70 @@ export class NvidiaContentGenerator implements ContentGenerator {
                     yield response;
                   }
 
-                  // 2. Handle Content with strict look-ahead
+                  // 2. Content is accumulated and filtered
                   if (delta.content) {
                     textBuffer += delta.content;
 
-                    if (!markerActive) {
-                      const markerIdx = textBuffer.indexOf('<|');
-                      if (markerIdx !== -1) {
-                        // Found start of a marker. Yield text BEFORE it.
-                        const preMarker = textBuffer.substring(0, markerIdx);
-                        if (preMarker) {
-                          const response = new GenerateContentResponse();
-                          response.candidates = [{
-                            content: { role: 'model', parts: [{ text: preMarker }] }
-                          }];
-                          yield response;
-                        }
-                        textBuffer = textBuffer.substring(markerIdx);
-                        markerActive = true;
-                      } else {
-                        // No marker yet. Hold the last character if it's '<'
-                        let safeLength = textBuffer.length;
-                        if (textBuffer.endsWith('<')) safeLength -= 1;
-                        
-                        if (safeLength > 0) {
-                          const safeText = textBuffer.substring(0, safeLength);
-                          const response = new GenerateContentResponse();
-                          response.candidates = [{
-                            content: { role: 'model', parts: [{ text: safeText }] }
-                          }];
-                          yield response;
-                          textBuffer = textBuffer.substring(safeLength);
-                        }
-                      }
-                    }
-
-                    if (markerActive) {
-                      if (textBuffer.includes('<|tool_calls_section_end|>')) {
-                        const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-                        const response = new GenerateContentResponse();
-                        response.candidates = [{
-                          content: {
-                            role: 'model',
-                            parts: [...(text ? [{ text }] : []), ...toolCalls]
+                    while (textBuffer.length > 0) {
+                      if (!markerActive) {
+                        const markerIdx = textBuffer.indexOf('<|');
+                        if (markerIdx !== -1) {
+                          // Yield safe text before the marker
+                          const safeText = textBuffer.substring(0, markerIdx);
+                          if (safeText) {
+                            const response = new GenerateContentResponse();
+                            response.candidates = [{
+                              content: { role: 'model', parts: [{ text: safeText }] }
+                            }];
+                            yield response;
                           }
-                        }];
-                        yield response;
-                        textBuffer = '';
-                        markerActive = false;
+                          textBuffer = textBuffer.substring(markerIdx);
+                          markerActive = true;
+                        } else {
+                          // No marker found. Yield text but hold the last few chars if they look like a start (e.g. "<")
+                          let yieldUntil = textBuffer.length;
+                          if (textBuffer.endsWith('<')) yieldUntil -= 1;
+                          
+                          if (yieldUntil > 0) {
+                            const safeText = textBuffer.substring(0, yieldUntil);
+                            const response = new GenerateContentResponse();
+                            response.candidates = [{
+                              content: { role: 'model', parts: [{ text: safeText }] }
+                            }];
+                            yield response;
+                            textBuffer = textBuffer.substring(yieldUntil);
+                          }
+                          break; // Wait for more data
+                        }
+                      } else {
+                        // We are inside a marker section
+                        const endIdx = textBuffer.indexOf('<|tool_calls_section_end|>');
+                        if (endIdx !== -1) {
+                          const fullMarkerLength = endIdx + '<|tool_calls_section_end|>'.length;
+                          const markerContent = textBuffer.substring(0, fullMarkerLength);
+                          const { text, toolCalls } = self.parseEmbeddedToolCalls(markerContent);
+                          
+                          const response = new GenerateContentResponse();
+                          response.candidates = [{
+                            content: {
+                              role: 'model',
+                              parts: [...(text ? [{ text }] : []), ...toolCalls]
+                            }
+                          }];
+                          yield response;
+                          
+                          textBuffer = textBuffer.substring(fullMarkerLength);
+                          markerActive = false;
+                        } else {
+                          break; // Keep buffering until we find the end marker
+                        }
                       }
-                      // Keep buffering marker...
                     }
                   }
 
                   // 3. Handle standard Tool Calls
                   if (delta.tool_calls) {
                     const response = self.mapFromOpenAiStreamResponse(json);
-                    // Filter parts to only include function calls
                     response.candidates![0].content.parts = response.candidates![0].content.parts.filter(p => p.functionCall);
                     if (response.candidates![0].content.parts.length > 0) {
                       yield response;
@@ -297,16 +304,14 @@ export class NvidiaContentGenerator implements ContentGenerator {
           }
         }
         
-        // Final flush
+        // Final flush at end of stream
         if (textBuffer) {
           const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-          if (text || toolCalls.length > 0) {
-            const response = new GenerateContentResponse();
-            response.candidates = [{
-              content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
-            }];
-            yield response;
-          }
+          const response = new GenerateContentResponse();
+          response.candidates = [{
+            content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
+          }];
+          yield response;
         }
       } finally {
         reader.releaseLock();
