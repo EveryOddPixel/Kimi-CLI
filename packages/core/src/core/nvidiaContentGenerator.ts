@@ -329,10 +329,9 @@ export class NvidiaContentGenerator implements ContentGenerator {
     const toolCalls: any[] = [];
     let remainingText = text;
 
-    // Regex to match Kimi's tool call format:
-    // <|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:ID<|tool_call_argument_begin|>JSON_ARGS<|tool_call_end|><|tool_calls_section_end|>
+    // Resilient Regex: Handles Kimi's tool calls even with unexpected spaces/newlines
     const sectionRegex = /<\|tool_calls_section_begin\|>([\s\S]*?)<\|tool_calls_section_end\|>/g;
-    const callRegex = /<\|tool_call_begin\|>functions\.(\w+):?\d*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
+    const callRegex = /<\|tool_call_begin\|>\s*functions\.(\w+):?\d*\s*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
 
     let match;
     while ((match = sectionRegex.exec(text)) !== null) {
@@ -340,14 +339,15 @@ export class NvidiaContentGenerator implements ContentGenerator {
       let callMatch;
       while ((callMatch = callRegex.exec(sectionContent)) !== null) {
         try {
+          const argsText = callMatch[2].trim();
           toolCalls.push({
             functionCall: {
               name: callMatch[1],
-              args: JSON.parse(callMatch[2].trim()),
+              args: JSON.parse(argsText),
             },
           });
         } catch (e) {
-          debugLogger.warn(`Failed to parse Kimi tool arguments: ${callMatch[2]}`);
+          debugLogger.warn(`[BRAIN] Protocol Error: Failed to parse tool arguments: ${callMatch[2]}`);
         }
       }
       remainingText = remainingText.replace(match[0], '');
