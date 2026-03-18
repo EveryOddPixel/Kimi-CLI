@@ -75,8 +75,14 @@ export class NvidiaContentGenerator implements ContentGenerator {
       max_tokens: request.config?.maxOutputTokens ?? 16384,
     };
 
-    const targetUrl = `${this.config.baseUrl}/chat/completions`;
-    debugLogger.debug(`NVIDIA API request to: ${targetUrl}`);
+    const baseUrl = this.config.baseUrl?.endsWith('/') 
+      ? this.config.baseUrl.slice(0, -1) 
+      : (this.config.baseUrl || 'https://integrate.api.nvidia.com/v1');
+    const targetUrl = `${baseUrl}/chat/completions`;
+    
+    debugLogger.debug(`[NVIDIA] Requesting model: ${request.model}`);
+    debugLogger.debug(`[NVIDIA] URL: ${targetUrl}`);
+    
     const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
@@ -112,8 +118,14 @@ export class NvidiaContentGenerator implements ContentGenerator {
       max_tokens: request.config?.maxOutputTokens ?? 16384,
     };
 
-    const targetUrl = `${this.config.baseUrl}/chat/completions`;
-    debugLogger.debug(`NVIDIA API request to: ${targetUrl}`);
+    const baseUrl = this.config.baseUrl?.endsWith('/') 
+      ? this.config.baseUrl.slice(0, -1) 
+      : (this.config.baseUrl || 'https://integrate.api.nvidia.com/v1');
+    const targetUrl = `${baseUrl}/chat/completions`;
+    
+    debugLogger.debug(`[NVIDIA] Requesting model: ${request.model}`);
+    debugLogger.debug(`[NVIDIA] URL: ${targetUrl}`);
+    
     const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
