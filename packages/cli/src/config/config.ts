@@ -41,6 +41,7 @@ import {
   type HookEventName,
   type OutputFormat,
   detectIdeFromEnv,
+  AuthType,
 } from '@google/gemini-cli-core';
 import {
   type Settings,
