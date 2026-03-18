@@ -54,7 +54,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
         .filter((p: any) => p.functionResponse)
         .map((p: any) => ({
           role: 'tool',
-          tool_call_id: p.functionResponse.name, // This is a hack, Gemini format doesn't have IDs
+          tool_call_id: p.functionResponse.name,
           content: JSON.stringify(p.functionResponse.response),
         }));
 
@@ -117,9 +117,6 @@ export class NvidiaContentGenerator implements ContentGenerator {
       : (this.config.baseUrl || 'https://integrate.api.nvidia.com/v1');
     const targetUrl = `${baseUrl}/chat/completions`;
     
-    debugLogger.debug(`[NVIDIA] Requesting model: ${request.model}`);
-    debugLogger.debug(`[NVIDIA] URL: ${targetUrl}`);
-    
     const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
@@ -173,9 +170,6 @@ export class NvidiaContentGenerator implements ContentGenerator {
       : (this.config.baseUrl || 'https://integrate.api.nvidia.com/v1');
     const targetUrl = `${baseUrl}/chat/completions`;
     
-    debugLogger.debug(`[NVIDIA] Requesting model: ${request.model}`);
-    debugLogger.debug(`[NVIDIA] URL: ${targetUrl}`);
-    
     const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
@@ -219,7 +213,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const delta = json.choices[0]?.delta;
                 
                 if (delta) {
-                  // 1. Always yield reasoning immediately
+                  // 1. Reasoning
                   if (delta.reasoning_content) {
                     const response = new GenerateContentResponse();
                     response.candidates = [{
@@ -228,72 +222,71 @@ export class NvidiaContentGenerator implements ContentGenerator {
                     yield response;
                   }
 
-                  // 2. Rigid State-Machine based Content Processing
+                  // 2. Aggressive Scrubber for Content
                   if (delta.content) {
                     textBuffer += delta.content;
 
                     let continueLoop = true;
                     while (continueLoop && textBuffer.length > 0) {
                       continueLoop = false;
+                      
                       if (!markerActive) {
                         const markerIdx = textBuffer.indexOf('<|');
                         if (markerIdx !== -1) {
-                          // FOUND MARKER START: Flush everything BEFORE it
+                          // FOUND MARKER: Flush text BEFORE it
                           const safeText = textBuffer.substring(0, markerIdx);
                           if (safeText) {
                             const response = new GenerateContentResponse();
-                            response.candidates = [{
-                              content: { role: 'model', parts: [{ text: safeText }] }
-                            }];
+                            response.candidates = [{ content: { role: 'model', parts: [{ text: safeText }] } }];
                             yield response;
                           }
                           textBuffer = textBuffer.substring(markerIdx);
                           markerActive = true;
                           continueLoop = true;
                         } else {
-                          // NO MARKER FOUND: Yield text, but hold potential partial starts
-                          let safeLength = textBuffer.length;
-                          if (textBuffer.endsWith('<')) safeLength -= 1;
-                          else if (textBuffer.endsWith('<|')) safeLength -= 2;
+                          // NO MARKER: Yield text but hold last few chars if they start with '<'
+                          let safeLen = textBuffer.length;
+                          if (textBuffer.endsWith('<')) safeLen -= 1;
+                          else if (textBuffer.endsWith('<|')) safeLen -= 2;
                           
-                          if (safeLength > 0) {
-                            const safeText = textBuffer.substring(0, safeLength);
+                          if (safeLen > 0) {
+                            const safeText = textBuffer.substring(0, safeLen);
                             const response = new GenerateContentResponse();
-                            response.candidates = [{
-                              content: { role: 'model', parts: [{ text: safeText }] }
-                            }];
+                            response.candidates = [{ content: { role: 'model', parts: [{ text: safeText }] } }];
                             yield response;
-                            textBuffer = textBuffer.substring(safeLength);
+                            textBuffer = textBuffer.substring(safeLen);
                             continueLoop = true;
                           }
                         }
                       } else {
-                        // PROTOCOL LOCKED: Wait for closing tag
-                        const endMarker = '<|tool_calls_section_end|>';
-                        const endIdx = textBuffer.indexOf(endMarker);
+                        // PROTOCOL LOCKED: Check for individual tool_call_end
+                        const callEndMarker = '<|tool_call_end|>';
+                        const endIdx = textBuffer.indexOf(callEndMarker);
                         if (endIdx !== -1) {
-                          const fullMarkerLength = endIdx + endMarker.length;
-                          const markerContent = textBuffer.substring(0, fullMarkerLength);
-                          const { text, toolCalls } = self.parseEmbeddedToolCalls(markerContent);
+                          const callContent = textBuffer.substring(0, endIdx + callEndMarker.length);
+                          const { toolCalls } = self.parseEmbeddedToolCalls(callContent);
                           
-                          const response = new GenerateContentResponse();
-                          response.candidates = [{
-                            content: {
-                              role: 'model',
-                              parts: [...(text ? [{ text }] : []), ...toolCalls]
-                            }
-                          }];
-                          yield response;
+                          if (toolCalls.length > 0) {
+                            const response = new GenerateContentResponse();
+                            response.candidates = [{
+                              content: { role: 'model', parts: toolCalls }
+                            }];
+                            yield response;
+                          }
                           
-                          textBuffer = textBuffer.substring(fullMarkerLength);
-                          markerActive = false;
+                          textBuffer = textBuffer.substring(endIdx + callEndMarker.length);
+                          // We stay in markerActive until the SECTION ends or turn ends
+                          if (textBuffer.includes('<|tool_calls_section_end|>')) {
+                            textBuffer = textBuffer.replace('<|tool_calls_section_end|>', '');
+                            markerActive = false;
+                          }
                           continueLoop = true;
                         }
                       }
                     }
                   }
 
-                  // 3. Handle standard Tool Calls
+                  // 3. standard tool calls
                   if (delta.tool_calls) {
                     const response = self.mapFromOpenAiStreamResponse(json);
                     response.candidates![0].content.parts = response.candidates![0].content.parts.filter(p => p.functionCall);
@@ -302,21 +295,23 @@ export class NvidiaContentGenerator implements ContentGenerator {
                     }
                   }
                 }
-              } catch (e) {
-                // Ignore partial lines
-              }
+              } catch (e) { /* ignore partial */ }
             }
           }
         }
         
-        // Final flush
+        // FINAL CLEANUP: Flush remaining buffer with force-scrub
         if (textBuffer) {
           const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-          const response = new GenerateContentResponse();
-          response.candidates = [{
-            content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
-          }];
-          yield response;
+          if (text || toolCalls.length > 0) {
+            const response = new GenerateContentResponse();
+            // Force-scrub any remaining markers from the text part
+            const scrubbedText = text.replace(/<\|[\s\S]*?\|>/g, '').trim();
+            response.candidates = [{
+              content: { role: 'model', parts: [...(scrubbedText ? [{ text: scrubbedText }] : []), ...toolCalls] }
+            }];
+            yield response;
+          }
         }
       } finally {
         reader.releaseLock();
@@ -339,48 +334,29 @@ export class NvidiaContentGenerator implements ContentGenerator {
     const toolCalls: any[] = [];
     let remainingText = text;
 
-    // Resilient Regex: Handles Kimi's tool calls even with unexpected spaces/newlines
-    const sectionRegex = /<\|tool_calls_section_begin\|>([\s\S]*?)<\|tool_calls_section_end\|>/g;
+    // Resilient Regex: Matches calls with or without the outer section tags
     const callRegex = /<\|tool_call_begin\|>\s*functions\.([\w.]+)(?::\d+)?\s*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
 
     let match;
-    while ((match = sectionRegex.exec(text)) !== null) {
-      const sectionContent = match[1];
-      let callMatch;
-      while ((callMatch = callRegex.exec(sectionContent)) !== null) {
-        try {
-          const argsText = callMatch[2].trim();
-          toolCalls.push({
-            functionCall: {
-              name: callMatch[1],
-              args: JSON.parse(argsText),
-            },
-          });
-        } catch (e) {
-          debugLogger.warn(`[BRAIN] Protocol Error: Failed to parse tool arguments: ${callMatch[2]}`);
-        }
+    while ((match = callRegex.exec(text)) !== null) {
+      try {
+        const argsText = match[2].trim();
+        toolCalls.push({
+          functionCall: {
+            name: match[1],
+            args: JSON.parse(argsText),
+          },
+        });
+        remainingText = remainingText.replace(match[0], '');
+      } catch (e) {
+        debugLogger.warn(`[PROTOCOL] Failed to parse tool arguments: ${match[2]}`);
       }
-      remainingText = remainingText.replace(match[0], '');
     }
 
-    // Fallback search for calls outside of sections (if any)
-    let callMatch;
-    while ((callMatch = callRegex.exec(remainingText)) !== null) {
-        try {
-          const argsText = callMatch[2].trim();
-          toolCalls.push({
-            functionCall: {
-              name: callMatch[1],
-              args: JSON.parse(argsText),
-            },
-          });
-          remainingText = remainingText.replace(callMatch[0], '');
-        } catch (e) {
-          // Ignore partial
-        }
-    }
+    // Scrub all Kimi markers from the text
+    remainingText = remainingText.replace(/<\|[\s\S]*?\|>/g, '').trim();
 
-    return { text: remainingText.trim(), toolCalls };
+    return { text: remainingText, toolCalls };
   }
 
   private mapFromOpenAiResponse(data: any): GenerateContentResponse {
@@ -398,34 +374,19 @@ export class NvidiaContentGenerator implements ContentGenerator {
       parts.push({ text });
     }
     
-    // Add standard tool calls
     if (choice.message.tool_calls) {
       for (const tc of choice.message.tool_calls) {
         parts.push({
-          functionCall: {
-            name: tc.function.name,
-            args: JSON.parse(tc.function.arguments),
-          },
+          functionCall: { name: tc.function.name, args: JSON.parse(tc.function.arguments) },
         });
       }
     }
 
-    // Add parsed embedded tool calls
     parts.push(...toolCalls);
 
-    if (parts.length === 0) {
-      parts.push({ text: '' });
-    }
+    if (parts.length === 0) {parts.push({ text: '' });}
 
-    out.candidates = [
-      {
-        content: {
-          role: 'model',
-          parts: parts,
-        },
-        finishReason: choice.finish_reason,
-      },
-    ];
+    out.candidates = [{ content: { role: 'model', parts: parts }, finishReason: choice.finish_reason }];
     out.usageMetadata = {
       promptTokenCount: data.usage?.prompt_tokens,
       candidatesTokenCount: data.usage?.completion_tokens,
@@ -438,35 +399,18 @@ export class NvidiaContentGenerator implements ContentGenerator {
     const out = new GenerateContentResponse();
     const choice = data.choices[0];
     const delta = choice.delta;
-    
     const parts: any[] = [];
-    if (delta && delta.reasoning_content) {
-      parts.push({ thought: delta.reasoning_content });
-    }
-    
+    if (delta && delta.reasoning_content) {parts.push({ thought: delta.reasoning_content });}
     if (delta && delta.tool_calls) {
       for (const tc of delta.tool_calls) {
         if (tc.function) {
           parts.push({
-            functionCall: {
-              name: tc.function.name,
-              args: tc.function.arguments ? JSON.parse(tc.function.arguments) : {},
-            },
+            functionCall: { name: tc.function.name, args: tc.function.arguments ? JSON.parse(tc.function.arguments) : {} },
           });
         }
       }
     }
-
-    out.candidates = [
-      {
-        content: {
-          role: 'model',
-          parts: parts.length > 0 ? parts : [{ text: '' }],
-        },
-        finishReason: choice.finish_reason,
-      },
-    ];
-    
+    out.candidates = [{ content: { role: 'model', parts: parts.length > 0 ? parts : [{ text: '' }] }, finishReason: choice.finish_reason }];
     if (data.usage) {
       out.usageMetadata = {
         promptTokenCount: data.usage.prompt_tokens,
