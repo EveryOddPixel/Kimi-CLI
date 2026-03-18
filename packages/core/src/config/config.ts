@@ -2707,6 +2707,9 @@ export class Config implements McpContext, AgentLoopContext {
   }
 
   async getNumericalRoutingEnabled(): Promise<boolean> {
+    if (this.contentGeneratorConfig?.authType === AuthType.NVIDIA) {
+      return false;
+    }
     await this.ensureExperimentsLoaded();
 
     const flag =
@@ -3036,6 +3039,9 @@ export class Config implements McpContext, AgentLoopContext {
   }
 
   getGemmaModelRouterSettings(): GemmaModelRouterSettings {
+    if (this.contentGeneratorConfig?.authType === AuthType.NVIDIA) {
+      return { enabled: false };
+    }
     return this.gemmaModelRouter;
   }
 

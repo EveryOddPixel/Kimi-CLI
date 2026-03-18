@@ -134,6 +134,10 @@ export class ClassifierStrategy implements RoutingStrategy {
     baseLlmClient: BaseLlmClient,
     _localLiteRtLmClient: LocalLiteRtLmClient,
   ): Promise<RoutingDecision | null> {
+    const authType = config.getContentGeneratorConfig?.()?.authType;
+    if (authType === AuthType.NVIDIA) {
+      return null;
+    }
     const startTime = Date.now();
     try {
       const model = context.requestedModel ?? config.getModel();
