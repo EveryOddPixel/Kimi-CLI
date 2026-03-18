@@ -24,10 +24,10 @@ interface AppHeaderProps {
   showDetails?: boolean;
 }
 
-const DEFAULT_ICON = `▝▜▄  
-  ▝▜▄
- ▗▟▀ 
-▝▀    `;
+const DEFAULT_ICON = `▛▀▀▀▀▜
+▙▄ ▐ ▄▟
+   ▐   
+   ▐   `;
 
 /**
  * The default Apple Terminal.app adds significant line-height padding between
@@ -36,10 +36,10 @@ const DEFAULT_ICON = `▝▜▄
  * which makes the padding gaps look like an intentional "scanline" design
  * rather than a broken image.
  */
-const MAC_TERMINAL_ICON = `▝▜▄  
-  ▝▜▄
-  ▗▟▀
-▗▟▀  `;
+const MAC_TERMINAL_ICON = `▛▀▀▀▀▜
+▙▄ ▐ ▄▟
+   ▐   
+   ▐   `;
 
 export const AppHeader = ({ version, showDetails = true }: AppHeaderProps) => {
   const settings = useSettings();
@@ -71,7 +71,7 @@ export const AppHeader = ({ version, showDetails = true }: AppHeaderProps) => {
             <Box marginLeft={2} flexDirection="column">
               <Box>
                 <Text bold color={theme.text.primary}>
-                  Gemini CLI
+                  Theory Elemental
                 </Text>
                 <Text color={theme.text.secondary}> v{version}</Text>
               </Box>
@@ -90,10 +90,10 @@ export const AppHeader = ({ version, showDetails = true }: AppHeaderProps) => {
             <ThemedGradient>{ICON}</ThemedGradient>
           </Box>
           <Box marginLeft={2} flexDirection="column">
-            {/* Line 1: Gemini CLI vVersion [Updating] */}
+            {/* Line 1: Theory Elemental vVersion [Updating] */}
             <Box>
               <Text bold color={theme.text.primary}>
-                Gemini CLI
+                Theory Elemental
               </Text>
               <Text color={theme.text.secondary}> v{version}</Text>
               {updateInfo && (
