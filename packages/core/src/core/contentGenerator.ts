@@ -21,6 +21,7 @@ import type { UserTierId, GeminiUserTier } from '../code_assist/types.js';
 import { LoggingContentGenerator } from './loggingContentGenerator.js';
 import { InstallationManager } from '../utils/installationManager.js';
 import { FakeContentGenerator } from './fakeContentGenerator.js';
+import { NvidiaContentGenerator } from './nvidiaContentGenerator.js';
 import { parseCustomHeaders } from '../utils/customHeaderUtils.js';
 import { determineSurface } from '../utils/surface.js';
 import { RecordingContentGenerator } from './recordingContentGenerator.js';
@@ -61,6 +62,7 @@ export enum AuthType {
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
   GATEWAY = 'gateway',
+  NVIDIA = 'nvidia',
 }
 
 /**
@@ -72,6 +74,9 @@ export enum AuthType {
  * 3. GEMINI_API_KEY -> USE_GEMINI
  */
 export function getAuthTypeFromEnv(): AuthType | undefined {
+  if (process.env['NVIDIA_API_KEY']) {
+    return AuthType.NVIDIA;
+  }
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
     return AuthType.LOGIN_WITH_GOOGLE;
   }
@@ -106,6 +111,7 @@ export async function createContentGeneratorConfig(
   baseUrl?: string,
   customHeaders?: Record<string, string>,
 ): Promise<ContentGeneratorConfig> {
+  const nvidiaApiKeyFromEnv = process.env['NVIDIA_API_KEY'] || undefined;
   const geminiApiKey =
     apiKey ||
     process.env['GEMINI_API_KEY'] ||
@@ -130,6 +136,15 @@ export async function createContentGeneratorConfig(
     authType === AuthType.LOGIN_WITH_GOOGLE ||
     authType === AuthType.COMPUTE_ADC
   ) {
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.NVIDIA) {
+    contentGeneratorConfig.apiKey =
+      apiKey ||
+      nvidiaApiKeyFromEnv;
+    contentGeneratorConfig.baseUrl =
+      baseUrl || 'https://integrate.api.nvidia.com/v1';
     return contentGeneratorConfig;
   }
 
@@ -213,6 +228,13 @@ export async function createContentGenerator(
           gcConfig,
           sessionId,
         ),
+        gcConfig,
+      );
+    }
+
+    if (config.authType === AuthType.NVIDIA) {
+      return new LoggingContentGenerator(
+        new NvidiaContentGenerator(config),
         gcConfig,
       );
     }

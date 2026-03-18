@@ -284,7 +284,14 @@ export async function main() {
   );
 
   // Set a default auth type if one isn't set or is set to a legacy type
-  if (
+  // Force NVIDIA if key is present
+  if (process.env['NVIDIA_API_KEY']) {
+    settings.setValue(
+      SettingScope.User,
+      'security.auth.selectedType',
+      AuthType.NVIDIA,
+    );
+  } else if (
     !settings.merged.security.auth.selectedType ||
     settings.merged.security.auth.selectedType === AuthType.LEGACY_CLOUD_SHELL
   ) {

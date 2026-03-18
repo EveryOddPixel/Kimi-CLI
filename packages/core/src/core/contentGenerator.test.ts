@@ -18,6 +18,7 @@ import type { Config } from '../config/config.js';
 import { LoggingContentGenerator } from './loggingContentGenerator.js';
 import { loadApiKey } from './apiKeyCredentialStorage.js';
 import { FakeContentGenerator } from './fakeContentGenerator.js';
+import { NvidiaContentGenerator } from './nvidiaContentGenerator.js';
 import { RecordingContentGenerator } from './recordingContentGenerator.js';
 import { resetVersionCache } from '../utils/version.js';
 
@@ -119,6 +120,18 @@ describe('createContentGenerator', () => {
     expect(generator).toEqual(
       new LoggingContentGenerator(mockGenerator, mockConfig),
     );
+  });
+
+  it('should create an NvidiaContentGenerator when AuthType is NVIDIA', async () => {
+    const generator = await createContentGenerator(
+      {
+        authType: AuthType.NVIDIA,
+        apiKey: 'test-nvidia-key',
+      },
+      mockConfig,
+    );
+    expect(generator).toBeInstanceOf(LoggingContentGenerator);
+    expect((generator as LoggingContentGenerator).getWrapped()).toBeInstanceOf(NvidiaContentGenerator);
   });
 
   it('should create a GoogleGenAI content generator', async () => {
@@ -724,6 +737,16 @@ describe('createContentGeneratorConfig', () => {
     );
     expect(config.apiKey).toBeUndefined();
     expect(config.vertexai).toBeUndefined();
+  });
+
+  it('should configure for NVIDIA when NVIDIA_API_KEY is set', async () => {
+    vi.stubEnv('NVIDIA_API_KEY', 'env-nvidia-key');
+    const config = await createContentGeneratorConfig(
+      mockConfig,
+      AuthType.NVIDIA,
+    );
+    expect(config.apiKey).toBe('env-nvidia-key');
+    expect(config.baseUrl).toBe('https://integrate.api.nvidia.com/v1');
   });
 });
 

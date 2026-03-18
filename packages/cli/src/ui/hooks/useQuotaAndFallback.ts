@@ -135,7 +135,8 @@ export function useQuotaAndFallback({
         message = messageLines.join('\n');
       } else if (error instanceof ModelNotFoundError) {
         isModelNotFoundError = true;
-        if (VALID_GEMINI_MODELS.has(failedModel)) {
+        const isGemini = failedModel.startsWith('gemini-') || failedModel.includes('flash') || failedModel.includes('pro');
+        if (VALID_GEMINI_MODELS.has(failedModel) && isGemini) {
           const messageLines = [
             `It seems like you don't have access to ${getDisplayString(failedModel)}.`,
             `Your admin might have disabled the access. Contact them to enable the Preview Release Channel.`,
@@ -144,11 +145,13 @@ export function useQuotaAndFallback({
         } else {
           const messageLines = [
             `Model "${failedModel}" was not found or is invalid.`,
+            error.message,
             `/model to switch models.`,
           ];
           message = messageLines.join('\n');
         }
       } else {
+
         const messageLines = [
           `We are currently experiencing high demand.`,
           'We apologize and appreciate your patience.',
