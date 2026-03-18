@@ -36,16 +36,39 @@ export class NvidiaContentGenerator implements ContentGenerator {
 
     const contents = Array.isArray(request.contents) ? request.contents : [request.contents];
     for (const content of contents as any[]) {
-      if (typeof content === 'string') {
-        messages.push({ role: 'user', content });
-      } else if (Array.isArray(content)) {
-        messages.push({ role: 'user', content: this.mapContentToText(content) });
-      } else {
-        const role = content.role === 'model' ? 'assistant' : 'user';
+      const role = content.role === 'model' ? 'assistant' : 'user';
+      
+      const toolCalls = content.parts
+        .filter((p: any) => p.functionCall)
+        .map((p: any) => ({
+          id: `call_${Math.random().toString(36).substring(2, 9)}`,
+          type: 'function',
+          function: {
+            name: p.functionCall.name,
+            arguments: JSON.stringify(p.functionCall.args),
+          },
+        }));
+
+      const functionResponses = content.parts
+        .filter((p: any) => p.functionResponse)
+        .map((p: any) => ({
+          role: 'tool',
+          tool_call_id: p.functionResponse.name, // This is a hack, Gemini format doesn't have IDs
+          content: JSON.stringify(p.functionResponse.response),
+        }));
+
+      const textContent = this.mapContentToText(content);
+
+      if (textContent || toolCalls.length > 0) {
         messages.push({
           role,
-          content: this.mapContentToText(content),
+          content: textContent || null,
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         });
+      }
+
+      if (functionResponses.length > 0) {
+        messages.push(...functionResponses);
       }
     }
 
@@ -66,7 +89,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
     const messages = this.mapToOpenAiMessages(request);
-    const body = {
+    const body: any = {
       model: request.model,
       messages,
       stream: false,
@@ -74,6 +97,19 @@ export class NvidiaContentGenerator implements ContentGenerator {
       top_p: request.config?.topP ?? 0.9,
       max_tokens: request.config?.maxOutputTokens ?? 16384,
     };
+
+    if (request.tools && request.tools.length > 0) {
+      body.tools = request.tools.flatMap((t: any) => 
+        t.functionDeclarations?.map((fd: any) => ({
+          type: 'function',
+          function: {
+            name: fd.name,
+            description: fd.description,
+            parameters: fd.parameters,
+          },
+        }))
+      ).filter(Boolean);
+    }
 
     const baseUrl = this.config.baseUrl?.endsWith('/') 
       ? this.config.baseUrl.slice(0, -1) 
@@ -109,7 +145,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
     _role: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
     const messages = this.mapToOpenAiMessages(request);
-    const body = {
+    const body: any = {
       model: request.model,
       messages,
       stream: true,
@@ -117,6 +153,19 @@ export class NvidiaContentGenerator implements ContentGenerator {
       top_p: request.config?.topP ?? 0.9,
       max_tokens: request.config?.maxOutputTokens ?? 16384,
     };
+
+    if (request.tools && request.tools.length > 0) {
+      body.tools = request.tools.flatMap((t: any) => 
+        t.functionDeclarations?.map((fd: any) => ({
+          type: 'function',
+          function: {
+            name: fd.name,
+            description: fd.description,
+            parameters: fd.parameters,
+          },
+        }))
+      ).filter(Boolean);
+    }
 
     const baseUrl = this.config.baseUrl?.endsWith('/') 
       ? this.config.baseUrl.slice(0, -1) 
@@ -198,6 +247,18 @@ export class NvidiaContentGenerator implements ContentGenerator {
     if (choice.message.content) {
       parts.push({ text: choice.message.content });
     }
+    
+    if (choice.message.tool_calls) {
+      for (const tc of choice.message.tool_calls) {
+        parts.push({
+          functionCall: {
+            name: tc.function.name,
+            args: JSON.parse(tc.function.arguments),
+          },
+        });
+      }
+    }
+
     if (parts.length === 0) {
       parts.push({ text: '' });
     }
@@ -230,6 +291,19 @@ export class NvidiaContentGenerator implements ContentGenerator {
     }
     if (delta && delta.content) {
       parts.push({ text: delta.content });
+    }
+    
+    if (delta && delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        if (tc.function) {
+          parts.push({
+            functionCall: {
+              name: tc.function.name,
+              args: tc.function.arguments ? JSON.parse(tc.function.arguments) : {},
+            },
+          });
+        }
+      }
     }
 
     out.candidates = [
