@@ -218,7 +218,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const delta = json.choices[0]?.delta;
                 
                 if (delta) {
-                  // Reasoning is always safe to yield immediately
+                  // Reasoning is safe
                   if (delta.reasoning_content) {
                     yield self.mapFromOpenAiStreamResponse(json);
                     continue;
@@ -227,28 +227,31 @@ export class NvidiaContentGenerator implements ContentGenerator {
                   if (delta.content) {
                     textBuffer += delta.content;
 
-                    // If we are not in a marker, yield everything UP TO the first '<|'
                     if (!markerActive) {
                       const markerIdx = textBuffer.indexOf('<|');
                       if (markerIdx !== -1) {
-                        // Yield text before marker
-                        const preMarkerText = textBuffer.substring(0, markerIdx);
-                        if (preMarkerText) {
-                          const response = self.mapFromOpenAiStreamResponse(json);
-                          response.candidates![0].content.parts = [{ text: preMarkerText }];
+                        // Yield only the text BEFORE the marker
+                        const safeText = textBuffer.substring(0, markerIdx);
+                        if (safeText) {
+                          const response = new GenerateContentResponse();
+                          response.candidates = [{
+                            content: { role: 'model', parts: [{ text: safeText }] }
+                          }];
                           yield response;
                         }
-                        // Enter marker mode and keep the rest in buffer
                         textBuffer = textBuffer.substring(markerIdx);
                         markerActive = true;
                       } else {
-                        // No marker at all, yield everything and clear buffer
-                        yield self.mapFromOpenAiStreamResponse(json);
+                        // No marker start, yield all current text buffer
+                        const response = new GenerateContentResponse();
+                        response.candidates = [{
+                          content: { role: 'model', parts: [{ text: textBuffer }] }
+                        }];
+                        yield response;
                         textBuffer = '';
                       }
-                    } 
-                    
-                    // If we ARE in a marker, only yield once it closes
+                    }
+
                     if (markerActive) {
                       if (textBuffer.includes('<|tool_calls_section_end|>')) {
                         const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
@@ -263,7 +266,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
                         textBuffer = '';
                         markerActive = false;
                       }
-                      // Otherwise, stay silent and keep buffering
+                      // Buffering marker... yield nothing
                     }
                   } else if (delta.tool_calls) {
                     yield self.mapFromOpenAiStreamResponse(json);
@@ -279,11 +282,13 @@ export class NvidiaContentGenerator implements ContentGenerator {
         // Final flush
         if (textBuffer) {
           const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-          const response = new GenerateContentResponse();
-          response.candidates = [{
-            content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
-          }];
-          yield response;
+          if (text || toolCalls.length > 0) {
+            const response = new GenerateContentResponse();
+            response.candidates = [{
+              content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
+            }];
+            yield response;
+          }
         }
       } finally {
         reader.releaseLock();
