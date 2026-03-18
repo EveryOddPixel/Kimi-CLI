@@ -198,7 +198,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
     async function* streamGenerator() {
       let buffer = '';
       let textBuffer = '';
-      let isBufferingMarker = false;
+      let markerActive = false;
 
       try {
         while (true) {
@@ -218,7 +218,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const delta = json.choices[0]?.delta;
                 
                 if (delta) {
-                  // Always yield reasoning immediately
+                  // Reasoning is always safe to yield immediately
                   if (delta.reasoning_content) {
                     yield self.mapFromOpenAiStreamResponse(json);
                     continue;
@@ -227,16 +227,31 @@ export class NvidiaContentGenerator implements ContentGenerator {
                   if (delta.content) {
                     textBuffer += delta.content;
 
-                    // Detect if we've entered a marker zone
-                    if (!isBufferingMarker && textBuffer.includes('<|')) {
-                      isBufferingMarker = true;
-                    }
-
-                    if (isBufferingMarker) {
+                    // If we are not in a marker, yield everything UP TO the first '<|'
+                    if (!markerActive) {
+                      const markerIdx = textBuffer.indexOf('<|');
+                      if (markerIdx !== -1) {
+                        // Yield text before marker
+                        const preMarkerText = textBuffer.substring(0, markerIdx);
+                        if (preMarkerText) {
+                          const response = self.mapFromOpenAiStreamResponse(json);
+                          response.candidates![0].content.parts = [{ text: preMarkerText }];
+                          yield response;
+                        }
+                        // Enter marker mode and keep the rest in buffer
+                        textBuffer = textBuffer.substring(markerIdx);
+                        markerActive = true;
+                      } else {
+                        // No marker at all, yield everything and clear buffer
+                        yield self.mapFromOpenAiStreamResponse(json);
+                        textBuffer = '';
+                      }
+                    } 
+                    
+                    // If we ARE in a marker, only yield once it closes
+                    if (markerActive) {
                       if (textBuffer.includes('<|tool_calls_section_end|>')) {
                         const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-                        
-                        // Construct a fresh response to avoid leaking the raw markers from the chunk
                         const response = new GenerateContentResponse();
                         response.candidates = [{
                           content: {
@@ -245,19 +260,12 @@ export class NvidiaContentGenerator implements ContentGenerator {
                           }
                         }];
                         yield response;
-                        
                         textBuffer = '';
-                        isBufferingMarker = false;
+                        markerActive = false;
                       }
-                      // Marker still in progress, hold everything
-                      continue;
-                    } else {
-                      // No markers, yield the content directly
-                      yield self.mapFromOpenAiStreamResponse(json);
-                      textBuffer = '';
+                      // Otherwise, stay silent and keep buffering
                     }
                   } else if (delta.tool_calls) {
-                    // Handle standard API tool calls
                     yield self.mapFromOpenAiStreamResponse(json);
                   }
                 }
@@ -268,19 +276,14 @@ export class NvidiaContentGenerator implements ContentGenerator {
           }
         }
         
-        // Final flush at the end of the stream
+        // Final flush
         if (textBuffer) {
           const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-          if (text || toolCalls.length > 0) {
-            const response = new GenerateContentResponse();
-            response.candidates = [{
-              content: {
-                role: 'model',
-                parts: [...(text ? [{ text }] : []), ...toolCalls]
-              }
-            }];
-            yield response;
-          }
+          const response = new GenerateContentResponse();
+          response.candidates = [{
+            content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
+          }];
+          yield response;
         }
       } finally {
         reader.releaseLock();
