@@ -198,6 +198,8 @@ export class NvidiaContentGenerator implements ContentGenerator {
     async function* streamGenerator() {
       let buffer = '';
       let textBuffer = '';
+      let isBufferingMarker = false;
+
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -215,43 +217,44 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const json = JSON.parse(trimmed.slice(6));
                 const delta = json.choices[0]?.delta;
                 
-                if (delta && (delta.content || delta.reasoning_content)) {
-                  const rawContent = delta.content || '';
-                  textBuffer += rawContent;
-
-                  // 1. Check for complete tool call sections
-                  if (textBuffer.includes('<|tool_calls_section_end|>')) {
-                    const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-                    const response = self.mapFromOpenAiStreamResponse(json);
-                    response.candidates![0].content.parts = [
-                      ...(text ? [{ text }] : []),
-                      ...toolCalls
-                    ];
-                    yield response;
-                    textBuffer = '';
-                  } 
-                  // 2. If we see the start of a marker, WAIT (don't yield anything)
-                  else if (textBuffer.includes('<|')) {
-                    // Check if the marker is actually just part of normal text or a real marker start
-                    const markerStartIdx = textBuffer.lastIndexOf('<|');
-                    const textBeforeMarker = textBuffer.substring(0, markerStartIdx);
-                    
-                    if (textBeforeMarker) {
-                      const response = self.mapFromOpenAiStreamResponse(json);
-                      response.candidates![0].content.parts = [{ text: textBeforeMarker }];
-                      yield response;
-                      textBuffer = textBuffer.substring(markerStartIdx);
-                    }
-                    continue;
-                  } 
-                  // 3. Normal text, yield normally
-                  else {
+                if (delta) {
+                  // Always yield reasoning immediately
+                  if (delta.reasoning_content) {
                     yield self.mapFromOpenAiStreamResponse(json);
-                    textBuffer = '';
+                    continue;
                   }
-                } else if (delta && delta.tool_calls) {
-                  // Standard API tool calls
-                  yield self.mapFromOpenAiStreamResponse(json);
+
+                  if (delta.content) {
+                    textBuffer += delta.content;
+
+                    if (textBuffer.includes('<|')) {
+                      isBufferingMarker = true;
+                    }
+
+                    if (isBufferingMarker) {
+                      if (textBuffer.includes('<|tool_calls_section_end|>')) {
+                        const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
+                        const response = self.mapFromOpenAiStreamResponse(json);
+                        response.candidates![0].content.parts = [
+                          ...(text ? [{ text }] : []),
+                          ...toolCalls
+                        ];
+                        yield response;
+                        textBuffer = '';
+                        isBufferingMarker = false;
+                      } else {
+                        // Keep buffering, don't yield anything
+                        continue;
+                      }
+                    } else {
+                      // Normal text, no markers in sight
+                      yield self.mapFromOpenAiStreamResponse(json);
+                      textBuffer = '';
+                    }
+                  } else if (delta.tool_calls) {
+                    // Standard API tool calls
+                    yield self.mapFromOpenAiStreamResponse(json);
+                  }
                 }
               } catch (e) {
                 // Ignore partial lines
@@ -260,7 +263,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
           }
         }
         
-        // Yield any remaining text in buffer at the end
+        // Final flush
         if (textBuffer) {
           const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
           const response = new GenerateContentResponse();
