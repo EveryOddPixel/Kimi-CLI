@@ -16,6 +16,7 @@ import {
 import type { ContentGenerator, ContentGeneratorConfig } from './contentGenerator.js';
 import type { LlmRole } from '../telemetry/llmRole.js';
 import type { UserTierId, GeminiUserTier } from '../code_assist/types.js';
+import { debugLogger } from '../utils/debugLogger.js';
 
 export class NvidiaContentGenerator implements ContentGenerator {
   userTier?: UserTierId;
@@ -218,7 +219,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const delta = json.choices[0]?.delta;
                 
                 if (delta) {
-                  // 1. Reasoning is always safe to yield
+                  // 1. Always yield reasoning immediately
                   if (delta.reasoning_content) {
                     const response = new GenerateContentResponse();
                     response.candidates = [{
@@ -227,15 +228,17 @@ export class NvidiaContentGenerator implements ContentGenerator {
                     yield response;
                   }
 
-                  // 2. Content is accumulated and filtered
+                  // 2. Rigid State-Machine based Content Processing
                   if (delta.content) {
                     textBuffer += delta.content;
 
-                    while (textBuffer.length > 0) {
+                    let continueLoop = true;
+                    while (continueLoop && textBuffer.length > 0) {
+                      continueLoop = false;
                       if (!markerActive) {
                         const markerIdx = textBuffer.indexOf('<|');
                         if (markerIdx !== -1) {
-                          // Yield safe text before the marker
+                          // FOUND MARKER START: Flush everything BEFORE it
                           const safeText = textBuffer.substring(0, markerIdx);
                           if (safeText) {
                             const response = new GenerateContentResponse();
@@ -246,27 +249,30 @@ export class NvidiaContentGenerator implements ContentGenerator {
                           }
                           textBuffer = textBuffer.substring(markerIdx);
                           markerActive = true;
+                          continueLoop = true;
                         } else {
-                          // No marker found. Yield text but hold the last few chars if they look like a start (e.g. "<")
-                          let yieldUntil = textBuffer.length;
-                          if (textBuffer.endsWith('<')) yieldUntil -= 1;
+                          // NO MARKER FOUND: Yield text, but hold potential partial starts
+                          let safeLength = textBuffer.length;
+                          if (textBuffer.endsWith('<')) safeLength -= 1;
+                          else if (textBuffer.endsWith('<|')) safeLength -= 2;
                           
-                          if (yieldUntil > 0) {
-                            const safeText = textBuffer.substring(0, yieldUntil);
+                          if (safeLength > 0) {
+                            const safeText = textBuffer.substring(0, safeLength);
                             const response = new GenerateContentResponse();
                             response.candidates = [{
                               content: { role: 'model', parts: [{ text: safeText }] }
                             }];
                             yield response;
-                            textBuffer = textBuffer.substring(yieldUntil);
+                            textBuffer = textBuffer.substring(safeLength);
+                            continueLoop = true;
                           }
-                          break; // Wait for more data
                         }
                       } else {
-                        // We are inside a marker section
-                        const endIdx = textBuffer.indexOf('<|tool_calls_section_end|>');
+                        // PROTOCOL LOCKED: Wait for closing tag
+                        const endMarker = '<|tool_calls_section_end|>';
+                        const endIdx = textBuffer.indexOf(endMarker);
                         if (endIdx !== -1) {
-                          const fullMarkerLength = endIdx + '<|tool_calls_section_end|>'.length;
+                          const fullMarkerLength = endIdx + endMarker.length;
                           const markerContent = textBuffer.substring(0, fullMarkerLength);
                           const { text, toolCalls } = self.parseEmbeddedToolCalls(markerContent);
                           
@@ -281,8 +287,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
                           
                           textBuffer = textBuffer.substring(fullMarkerLength);
                           markerActive = false;
-                        } else {
-                          break; // Keep buffering until we find the end marker
+                          continueLoop = true;
                         }
                       }
                     }
@@ -304,7 +309,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
           }
         }
         
-        // Final flush at end of stream
+        // Final flush
         if (textBuffer) {
           const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
           const response = new GenerateContentResponse();
@@ -336,7 +341,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
 
     // Resilient Regex: Handles Kimi's tool calls even with unexpected spaces/newlines
     const sectionRegex = /<\|tool_calls_section_begin\|>([\s\S]*?)<\|tool_calls_section_end\|>/g;
-    const callRegex = /<\|tool_call_begin\|>\s*functions\.(\w+):?\d*\s*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
+    const callRegex = /<\|tool_call_begin\|>\s*functions\.([\w.]+)(?::\d+)?\s*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
 
     let match;
     while ((match = sectionRegex.exec(text)) !== null) {
@@ -358,6 +363,23 @@ export class NvidiaContentGenerator implements ContentGenerator {
       remainingText = remainingText.replace(match[0], '');
     }
 
+    // Fallback search for calls outside of sections (if any)
+    let callMatch;
+    while ((callMatch = callRegex.exec(remainingText)) !== null) {
+        try {
+          const argsText = callMatch[2].trim();
+          toolCalls.push({
+            functionCall: {
+              name: callMatch[1],
+              args: JSON.parse(argsText),
+            },
+          });
+          remainingText = remainingText.replace(callMatch[0], '');
+        } catch (e) {
+          // Ignore partial
+        }
+    }
+
     return { text: remainingText.trim(), toolCalls };
   }
 
@@ -365,8 +387,8 @@ export class NvidiaContentGenerator implements ContentGenerator {
     const out = new GenerateContentResponse();
     const choice = data.choices[0];
     
-    let content = choice.message.content || '';
-    const { text, toolCalls } = this.parseEmbeddedToolCalls(content);
+    const rawContent = choice.message.content || '';
+    const { text, toolCalls } = this.parseEmbeddedToolCalls(rawContent);
     
     const parts: any[] = [];
     if (choice.message.reasoning_content) {
@@ -420,14 +442,6 @@ export class NvidiaContentGenerator implements ContentGenerator {
     const parts: any[] = [];
     if (delta && delta.reasoning_content) {
       parts.push({ thought: delta.reasoning_content });
-    }
-    
-    if (delta && delta.content) {
-      const { text, toolCalls } = this.parseEmbeddedToolCalls(delta.content);
-      if (text) {
-        parts.push({ text });
-      }
-      parts.push(...toolCalls);
     }
     
     if (delta && delta.tool_calls) {
