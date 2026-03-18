@@ -197,7 +197,7 @@ export class NvidiaContentGenerator implements ContentGenerator {
     const self = this;
     async function* streamGenerator() {
       let buffer = '';
-      let textBuffer = ''; // Buffer for tool call detection
+      let textBuffer = '';
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -215,30 +215,42 @@ export class NvidiaContentGenerator implements ContentGenerator {
                 const json = JSON.parse(trimmed.slice(6));
                 const delta = json.choices[0]?.delta;
                 
-                if (delta && delta.content) {
-                  textBuffer += delta.content;
-                  
-                  // Check if we have a complete tool call section
+                if (delta && (delta.content || delta.reasoning_content)) {
+                  const rawContent = delta.content || '';
+                  textBuffer += rawContent;
+
+                  // 1. Check for complete tool call sections
                   if (textBuffer.includes('<|tool_calls_section_end|>')) {
                     const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
-                    // Yield the translated response
                     const response = self.mapFromOpenAiStreamResponse(json);
-                    // Override with parsed data
                     response.candidates![0].content.parts = [
                       ...(text ? [{ text }] : []),
                       ...toolCalls
                     ];
                     yield response;
-                    textBuffer = ''; // Clear buffer
-                  } else if (textBuffer.includes('<|tool_calls_section_begin|>')) {
-                    // We are inside a tool call section, buffer it and don't yield text yet
+                    textBuffer = '';
+                  } 
+                  // 2. If we see the start of a marker, WAIT (don't yield anything)
+                  else if (textBuffer.includes('<|')) {
+                    // Check if the marker is actually just part of normal text or a real marker start
+                    const markerStartIdx = textBuffer.lastIndexOf('<|');
+                    const textBeforeMarker = textBuffer.substring(0, markerStartIdx);
+                    
+                    if (textBeforeMarker) {
+                      const response = self.mapFromOpenAiStreamResponse(json);
+                      response.candidates![0].content.parts = [{ text: textBeforeMarker }];
+                      yield response;
+                      textBuffer = textBuffer.substring(markerStartIdx);
+                    }
                     continue;
-                  } else {
-                    // Standard text, yield normally
+                  } 
+                  // 3. Normal text, yield normally
+                  else {
                     yield self.mapFromOpenAiStreamResponse(json);
                     textBuffer = '';
                   }
-                } else {
+                } else if (delta && delta.tool_calls) {
+                  // Standard API tool calls
                   yield self.mapFromOpenAiStreamResponse(json);
                 }
               } catch (e) {
@@ -246,6 +258,16 @@ export class NvidiaContentGenerator implements ContentGenerator {
               }
             }
           }
+        }
+        
+        // Yield any remaining text in buffer at the end
+        if (textBuffer) {
+          const { text, toolCalls } = self.parseEmbeddedToolCalls(textBuffer);
+          const response = new GenerateContentResponse();
+          response.candidates = [{
+            content: { role: 'model', parts: [...(text ? [{ text }] : []), ...toolCalls] }
+          }];
+          yield response;
         }
       } finally {
         reader.releaseLock();
