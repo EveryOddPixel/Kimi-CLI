@@ -705,6 +705,9 @@ export async function loadCliConfig(
     specifiedModel === GEMINI_MODEL_ALIAS_AUTO
       ? defaultModel
       : specifiedModel || defaultModel;
+
+  // Disable routing/classifier for NVIDIA to avoid 404s on internal Google-model requests
+  const disableModelRouterForAuth = [AuthType.NVIDIA];
   const sandboxConfig = await loadSandboxConfig(settings, argv);
   const screenReader =
     argv.screenReader !== undefined
@@ -825,6 +828,7 @@ export async function loadCliConfig(
     bugCommand: settings.advanced?.bugCommand,
     model: resolvedModel,
     maxSessionTurns: settings.model?.maxSessionTurns,
+    disableModelRouterForAuth,
 
     listExtensions: argv.listExtensions || false,
     listSessions: argv.listSessions || false,

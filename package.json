@@ -79,7 +79,7 @@
     "minimatch": "^10.2.2"
   },
   "bin": {
-    "kimi": "bundle/gemini.js"
+    "theory": "bundle/gemini.js"
   },
   "files": [
     "bundle/",

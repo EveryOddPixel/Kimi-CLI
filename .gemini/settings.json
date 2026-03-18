@@ -6,5 +6,19 @@
   },
   "general": {
     "devtools": true
+  },
+  "mcp": {
+    "servers": {
+      "theory-search": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "mcp-server-searxng"
+        ],
+        "env": {
+          "SEARXNG_URL": "https://searxng.theoryelemental.com/"
+        }
+      }
+    }
   }
 }

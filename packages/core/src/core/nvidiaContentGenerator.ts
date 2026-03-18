@@ -75,7 +75,9 @@ export class NvidiaContentGenerator implements ContentGenerator {
       max_tokens: request.config?.maxOutputTokens ?? 16384,
     };
 
-    const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+    const targetUrl = `${this.config.baseUrl}/chat/completions`;
+    debugLogger.debug(`NVIDIA API request to: ${targetUrl}`);
+    const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -110,7 +112,9 @@ export class NvidiaContentGenerator implements ContentGenerator {
       max_tokens: request.config?.maxOutputTokens ?? 16384,
     };
 
-    const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+    const targetUrl = `${this.config.baseUrl}/chat/completions`;
+    debugLogger.debug(`NVIDIA API request to: ${targetUrl}`);
+    const response = await fetch(targetUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
